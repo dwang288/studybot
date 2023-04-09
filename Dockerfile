@@ -14,4 +14,4 @@ WORKDIR /app/
 COPY --from=build /app/studybot .
 COPY --from=build /app/env /env
 
-CMD ["$PWD/studybot"]
+CMD ["./studybot"]
