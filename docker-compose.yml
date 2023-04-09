@@ -3,4 +3,6 @@ version: '3'
 services:
   studybot:
     build: .
+    volumes:
+      - ./env:/app/env
     restart: on-failure
