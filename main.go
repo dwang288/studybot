@@ -18,7 +18,6 @@ import (
 )
 
 func main() {
-	tokenID := flag.String("bot-token", "", "Discord bot token")
 	userID := flag.String("user-id", "", "User ID")
 
 	flag.Parse()
@@ -27,7 +26,11 @@ func main() {
 	checkErr(err)
 
 	// Create a new Discord session using the bot token
-	dg, err := discordgo.New("Bot " + *tokenID)
+	dg, err := discordgo.New("Bot " + os.Getenv("BOT_TOKEN"))
+	if *userID == "" {
+		*userID = os.Getenv("USER_ID")
+	}
+
 	if err != nil {
 		fmt.Println("Error creating Discord session:", err)
 		return
