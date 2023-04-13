@@ -18,14 +18,14 @@ import (
 )
 
 type Config struct {
-	UserID               string
-	ActiveTimerangeStart time.Time
-	ActiveTimerangeEnd   time.Time
-	Phrases              []string
+	UserID                 string
+	InactiveTimerangeStart time.Time
+	InactiveTimerangeEnd   time.Time
+	Phrases                []string
 }
 
 func (config *Config) isWithinTheTimePeriod(t time.Time) bool {
-	return config.ActiveTimerangeStart.Before(t) && config.ActiveTimerangeEnd.After(t)
+	return config.InactiveTimerangeStart.Before(t) && config.InactiveTimerangeEnd.After(t)
 }
 
 func checkErr(err error) {
@@ -37,9 +37,9 @@ func checkErr(err error) {
 func main() {
 
 	config := Config{
-		UserID:               "",
-		ActiveTimerangeStart: time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC), // default value is off
-		ActiveTimerangeEnd:   time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC),
+		UserID:                 "",
+		InactiveTimerangeStart: time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC), // default value is off
+		InactiveTimerangeEnd:   time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC),
 		Phrases: []string{
 			"is this a game to you?",
 			"you're not somebody.",
@@ -53,10 +53,9 @@ func main() {
 	}
 
 	err := godotenv.Load(getAbsolutePath("env/secrets.env"))
-	checkErr(err)
-
-	// Create a new Discord session using the bot token
-	dg, err := discordgo.New("Bot " + os.Getenv("BOT_TOKEN"))
+	if err != nil {
+		log.Fatalln("Error opening secrets file:", err)
+	}
 
 	uid := flag.String("user-id", "", "User ID")
 	flag.Parse()
@@ -66,16 +65,15 @@ func main() {
 		config.UserID = os.Getenv("USER_ID")
 	}
 
+	dg, err := discordgo.New("Bot " + os.Getenv("BOT_TOKEN"))
 	if err != nil {
-		fmt.Println("Error creating Discord session:", err)
-		return
+		log.Fatalln("Error creating Discord session:", err)
 	}
 
 	// Open a connection to Discord
 	err = dg.Open()
 	if err != nil {
-		fmt.Println("Error opening Discord connection:", err)
-		return
+		log.Fatalln("Error opening Discord connection:", err)
 	}
 
 	addCommands(dg)
@@ -103,16 +101,17 @@ func addCommands(dg *discordgo.Session) {
 			{
 				Type:        discordgo.ApplicationCommandOptionInteger,
 				Name:        "minutes",
-				Description: "the duration in minutes the bot should be active for",
+				Description: "the duration in minutes the bot should be disabled for",
 				Required:    true,
 			},
 		},
 	}
-
 	log.Printf("command: %v, dg.State.User.ID: %v", command, dg.State.User.ID)
 	_, err := dg.ApplicationCommandCreate(dg.State.User.ID, "", command)
 
-	checkErr(err)
+	if err != nil {
+		log.Println("Error creating application command:", err)
+	}
 }
 
 // This function is called whenever a new message is created
@@ -121,7 +120,7 @@ func messageCreate(s *discordgo.Session, config *Config, limiter *rate.Limiter) 
 
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Check if the message is not from a bot (to avoid sending messages from the bot to the channel)
-		if m.Author.ID == config.UserID && !m.Author.Bot && limiter.Allow() && config.isWithinTheTimePeriod(time.Now()) {
+		if m.Author.ID == config.UserID && !m.Author.Bot && !config.isWithinTheTimePeriod(time.Now()) && limiter.Allow() {
 			// Send a message to the channel
 			phrase := randomPhrase(config.Phrases)
 			_, err := s.ChannelMessageSend(m.ChannelID, phrase)
@@ -139,7 +138,7 @@ func setTime(s *discordgo.Session, config *Config) func(s *discordgo.Session, i 
 
 		var responseString string
 
-		if i.ApplicationCommandData().Name != "set_duration" {
+		if i.ApplicationCommandData().Name != "set_duration" && i.Member != nil && i.Member.User.ID != config.UserID {
 			return
 		}
 
@@ -147,17 +146,20 @@ func setTime(s *discordgo.Session, config *Config) func(s *discordgo.Session, i 
 			switch opt.Name {
 			case "minutes":
 				intervalMinutes := time.Duration(i.ApplicationCommandData().Options[0].IntValue()) * time.Minute
-				config.ActiveTimerangeStart = time.Now()
-				config.ActiveTimerangeEnd = config.ActiveTimerangeStart.Add(intervalMinutes)
+				config.InactiveTimerangeStart = time.Now()
+				config.InactiveTimerangeEnd = config.InactiveTimerangeStart.Add(intervalMinutes)
 
-				responseString = fmt.Sprintf("negging period set from %s to %s", config.ActiveTimerangeStart.Format("15:04PM"), config.ActiveTimerangeEnd.Format("15:04PM"))
+				responseString = fmt.Sprintf("free period set from %s to %s",
+					config.InactiveTimerangeStart.Format("15:04PM"),
+					config.InactiveTimerangeEnd.Format("15:04PM"),
+				)
 			default:
 				responseString = "wrong format"
 			}
 
 		}
 
-		log.Printf("start: %s\nend: %s", config.ActiveTimerangeStart, config.ActiveTimerangeEnd)
+		log.Printf("start: %s\nend: %s", config.InactiveTimerangeStart, config.InactiveTimerangeEnd)
 
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
