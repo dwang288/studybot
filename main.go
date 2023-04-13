@@ -17,18 +17,53 @@ import (
 	"github.com/joho/godotenv"
 )
 
-func main() {
-	userID := flag.String("user-id", "", "User ID")
+type Config struct {
+	UserID               string
+	ActiveTimerangeStart time.Time
+	ActiveTimerangeEnd   time.Time
+	Phrases              []string
+}
 
-	flag.Parse()
+func (config *Config) isWithinTheTimePeriod(t time.Time) bool {
+	return config.ActiveTimerangeStart.Before(t) && config.ActiveTimerangeEnd.After(t)
+}
+
+func checkErr(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func main() {
+
+	config := Config{
+		UserID:               "",
+		ActiveTimerangeStart: time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC),
+		ActiveTimerangeEnd:   time.Date(0, 0, 0, 23, 59, 59, 999999999, time.UTC),
+		Phrases: []string{
+			"is this a game to you?",
+			"you're not somebody.",
+			"don't you have work to do?",
+			"i didn't know this was more important than patient care?",
+			"why are you still here? i will CHEW your MEAT",
+			"sasuga exam failer.",
+			"tell me what you've learned in the past three hours",
+			"damn so if i give you the test right now it's just gonna be flying colors right?",
+		},
+	}
 
 	err := godotenv.Load(getAbsolutePath("env/secrets.env"))
 	checkErr(err)
 
 	// Create a new Discord session using the bot token
 	dg, err := discordgo.New("Bot " + os.Getenv("BOT_TOKEN"))
-	if *userID == "" {
-		*userID = os.Getenv("USER_ID")
+
+	uid := flag.String("user-id", "", "User ID")
+	flag.Parse()
+
+	config.UserID = *uid
+	if config.UserID == "" {
+		config.UserID = os.Getenv("USER_ID")
 	}
 
 	if err != nil {
@@ -36,20 +71,12 @@ func main() {
 		return
 	}
 
-	arr := []string{
-		"is this a game to you?",
-		"you're not somebody.",
-		"don't you have work to do?",
-		"i didn't know this was more important than patient care?",
-		"why are you still here? i will CHEW your MEAT",
-		"sasuga exam failer.",
-		"tell me what you've learned in the past three hours",
-		"damn so if i give you the test right now it's just gonna be flying colors right?",
-	}
+	addCommands(dg)
 
 	// Every 30 min add token, initially allows a burst of 5
 	limiter := rate.NewLimiter(0.0005, 5)
-	dg.AddHandler(messageCreate(dg, arr, *userID, limiter))
+	dg.AddHandler(messageCreate(dg, &config, limiter))
+	dg.AddHandler(setTime(dg, &config))
 
 	// Open a connection to Discord
 	err = dg.Open()
@@ -68,15 +95,24 @@ func main() {
 	dg.Close()
 }
 
+func addCommands(dg *discordgo.Session) {
+	command := &discordgo.ApplicationCommand{
+		Name:        "set_duration",
+		Description: "syntax: set_duration MINUTES",
+	}
+	_, err := dg.ApplicationCommandCreate(dg.State.User.ID, "", command)
+	checkErr(err)
+}
+
 // This function is called whenever a new message is created
-func messageCreate(s *discordgo.Session, arr []string, userID string, limiter *rate.Limiter) func(s *discordgo.Session, m *discordgo.MessageCreate) {
+func messageCreate(s *discordgo.Session, config *Config, limiter *rate.Limiter) func(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// Check if the message was sent by the user we want to monitor
 
 	return func(s *discordgo.Session, m *discordgo.MessageCreate) {
 		// Check if the message is not from a bot (to avoid sending messages from the bot to the channel)
-		if m.Author.ID == userID && !m.Author.Bot && limiter.Allow() {
+		if m.Author.ID == config.UserID && !m.Author.Bot && limiter.Allow() && config.isWithinTheTimePeriod(time.Now()) {
 			// Send a message to the channel
-			phrase := randomPhrase(arr)
+			phrase := randomPhrase(config.Phrases)
 			_, err := s.ChannelMessageSend(m.ChannelID, phrase)
 			log.Printf("m.Author.ID: %v, m.ChannelID: %v, phrase: %v", m.Author.ID, m.ChannelID, phrase)
 			if err != nil {
@@ -84,6 +120,31 @@ func messageCreate(s *discordgo.Session, arr []string, userID string, limiter *r
 			}
 		}
 	}
+}
+
+func setTime(s *discordgo.Session, config *Config) func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
+
+		log.Println("in setTime function")
+		if i.ApplicationCommandData().Name != "set_duration" {
+			return
+		}
+
+		intervalMinutes := time.Duration(i.ApplicationCommandData().Options[0].IntValue()) * time.Minute
+		config.ActiveTimerangeStart = time.Now()
+		config.ActiveTimerangeEnd = config.ActiveTimerangeStart.Add(intervalMinutes)
+
+		log.Printf("start: %s\nend: %s", config.ActiveTimerangeStart, config.ActiveTimerangeEnd)
+
+		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+			Type: discordgo.InteractionResponseChannelMessageWithSource,
+			Data: &discordgo.InteractionResponseData{
+				Content: fmt.Sprintf("set active time periods from %s to %s", config.ActiveTimerangeStart.Format("15:04"), config.ActiveTimerangeEnd.Format("15:04")),
+			},
+		})
+	}
+
 }
 
 func randomPhrase(arr []string) string {
@@ -96,10 +157,4 @@ func getAbsolutePath(path string) string {
 	execPath, err := os.Executable()
 	checkErr(err)
 	return filepath.Join(filepath.Dir(execPath), path)
-}
-
-func checkErr(err error) {
-	if err != nil {
-		log.Fatal(err)
-	}
 }
