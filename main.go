@@ -38,8 +38,8 @@ func main() {
 
 	config := Config{
 		UserID:               "",
-		ActiveTimerangeStart: time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC),
-		ActiveTimerangeEnd:   time.Date(0, 0, 0, 23, 59, 59, 999999999, time.UTC),
+		ActiveTimerangeStart: time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC), // default value is off
+		ActiveTimerangeEnd:   time.Date(0, 0, 0, 0, 0, 0, 0, time.UTC),
 		Phrases: []string{
 			"is this a game to you?",
 			"you're not somebody.",
@@ -71,19 +71,19 @@ func main() {
 		return
 	}
 
-	addCommands(dg)
-
-	// Every 30 min add token, initially allows a burst of 5
-	limiter := rate.NewLimiter(0.0005, 5)
-	dg.AddHandler(messageCreate(dg, &config, limiter))
-	dg.AddHandler(setTime(dg, &config))
-
 	// Open a connection to Discord
 	err = dg.Open()
 	if err != nil {
 		fmt.Println("Error opening Discord connection:", err)
 		return
 	}
+
+	addCommands(dg)
+
+	// Every 30 min add token, initially allows a burst of 5
+	limiter := rate.NewLimiter(0.0005, 5)
+	dg.AddHandler(messageCreate(dg, &config, limiter))
+	dg.AddHandler(setTime(dg, &config))
 
 	// Wait for a CTRL-C signal to close the bot
 	fmt.Println("Bot is running. Press CTRL-C to exit.")
@@ -98,9 +98,20 @@ func main() {
 func addCommands(dg *discordgo.Session) {
 	command := &discordgo.ApplicationCommand{
 		Name:        "set_duration",
-		Description: "syntax: set_duration MINUTES",
+		Description: "syntax: set_duration minutes:<minutes>",
+		Options: []*discordgo.ApplicationCommandOption{
+			{
+				Type:        discordgo.ApplicationCommandOptionInteger,
+				Name:        "minutes",
+				Description: "the duration in minutes the bot should be active for",
+				Required:    true,
+			},
+		},
 	}
+
+	log.Printf("command: %v, dg.State.User.ID: %v", command, dg.State.User.ID)
 	_, err := dg.ApplicationCommandCreate(dg.State.User.ID, "", command)
+
 	checkErr(err)
 }
 
@@ -126,21 +137,32 @@ func setTime(s *discordgo.Session, config *Config) func(s *discordgo.Session, i 
 
 	return func(s *discordgo.Session, i *discordgo.InteractionCreate) {
 
-		log.Println("in setTime function")
+		var responseString string
+
 		if i.ApplicationCommandData().Name != "set_duration" {
 			return
 		}
 
-		intervalMinutes := time.Duration(i.ApplicationCommandData().Options[0].IntValue()) * time.Minute
-		config.ActiveTimerangeStart = time.Now()
-		config.ActiveTimerangeEnd = config.ActiveTimerangeStart.Add(intervalMinutes)
+		for _, opt := range i.ApplicationCommandData().Options {
+			switch opt.Name {
+			case "minutes":
+				intervalMinutes := time.Duration(i.ApplicationCommandData().Options[0].IntValue()) * time.Minute
+				config.ActiveTimerangeStart = time.Now()
+				config.ActiveTimerangeEnd = config.ActiveTimerangeStart.Add(intervalMinutes)
+
+				responseString = fmt.Sprintf("negging period set from %s to %s", config.ActiveTimerangeStart.Format("15:04PM"), config.ActiveTimerangeEnd.Format("15:04PM"))
+			default:
+				responseString = "wrong format"
+			}
+
+		}
 
 		log.Printf("start: %s\nend: %s", config.ActiveTimerangeStart, config.ActiveTimerangeEnd)
 
 		s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 			Type: discordgo.InteractionResponseChannelMessageWithSource,
 			Data: &discordgo.InteractionResponseData{
-				Content: fmt.Sprintf("set active time periods from %s to %s", config.ActiveTimerangeStart.Format("15:04"), config.ActiveTimerangeEnd.Format("15:04")),
+				Content: responseString,
 			},
 		})
 	}
